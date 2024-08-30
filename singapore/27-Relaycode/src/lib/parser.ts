@@ -1,43 +1,48 @@
-import { Method } from "@/components/builder/extrinsic-builder";
-import { ApiPromise } from "@polkadot/api";
+import { PolkadotApi } from "@dedot/chaintypes";
+import { DedotClient } from "dedot";
+import { Metadata } from "dedot/codecs";
+import { assert, stringCamelCase } from "dedot/utils";
 
 export function createSectionOptions(
-  api: ApiPromise
-): { text: string; value: string }[] {
-  return Object.keys(api.tx)
-    .filter((s) => !s.startsWith("$"))
-    .sort()
-    .filter((name) => Object.keys(api.tx[name]).length)
-    .map((name) => ({
-      text: name,
-      value: name,
+  metadata: Metadata["latest"] | null
+): { text: string; value: string }[] | null {
+  if (!metadata) return null;
+  return metadata?.pallets
+    .filter((pallet) => !!pallet.calls)
+    .map((pallet) => ({
+      value: stringCamelCase(pallet.name),
+      text: pallet.name,
     }));
 }
 
+export type ClientMethod = {
+  section: string;
+  method: string;
+  args: { name: string; type: number; value?: string }[] | null;
+};
+
 export function createMethodOptions(
-  api: ApiPromise,
+  client: DedotClient<PolkadotApi>,
+  metadata: Metadata["latest"] | null,
   sectionName: string
-): Method[] {
-  const section = api.tx[sectionName];
+): ClientMethod[] | null {
+  const pallet = metadata?.pallets.find(
+    (pallet) => stringCamelCase(pallet.name) === sectionName
+  );
 
-  if (!section || Object.keys(section).length === 0) {
-    return [];
-  }
+  if (!pallet?.calls) return null;
 
-  return Object.keys(section)
-    .filter((s) => !s.startsWith("$"))
-    .sort()
-    .map((method) => {
-      const txMethod = section[method];
-      const args = txMethod.meta.args.map((arg) => ({
-        name: arg.name.toString(),
-        type: arg.type.toString(),
-      }));
+  const palletCalls = client.registry.findType(pallet?.calls);
+  assert(palletCalls.typeDef.type === "Enum");
 
-      return {
-        section: sectionName,
-        method,
-        args,
-      };
-    });
+  return palletCalls.typeDef.value.members.map((call) => {
+    return {
+      section: sectionName,
+      method: call.name,
+      args: call.fields.map((arg) => ({
+        name: arg.name || "",
+        type: arg.typeId,
+      })),
+    };
+  });
 }

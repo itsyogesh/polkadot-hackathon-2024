@@ -1,11 +1,16 @@
-"use client";
-import React, { useState, useEffect, use } from "react";
-import { GenericExtrinsic as Extrinsic, getTypeDef } from "@polkadot/types";
-import { useApi } from "@/context/api";
+import React, { useState, useEffect } from "react";
+import { DedotClient } from "dedot";
+import type { PolkadotApi } from "@dedot/chaintypes";
 import { useKeyring } from "@/context/keyring";
-import { Signer } from "@polkadot/api/types";
-import { toast } from "sonner";
-import { createMethodOptions, createSectionOptions } from "@/lib/parser";
+import {
+  ClientMethod,
+  createMethodOptions,
+  createSectionOptions,
+} from "@/lib/parser";
+import { useForm, Controller } from "react-hook-form";
+import { Metadata } from "dedot/codecs";
+import { ChainSubmittableExtrinsic } from "@dedot/chaintypes/polkadot/tx";
+import { PolkadotRuntimeRuntimeCallLike } from "@dedot/chaintypes/polkadot";
 import {
   Select,
   SelectContent,
@@ -15,203 +20,308 @@ import {
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Form,
   FormField,
   FormItem,
   FormLabel,
   FormControl,
-  FormMessage,
+  FormDescription,
 } from "@/components/ui/form";
-import { DropdownMenu } from "@/components/ui/dropdown-menu";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useForm } from "react-hook-form";
-
-declare global {
-  interface Window {
-    injected: {
-      enable: () => Promise<string[]>;
-      version: string;
-      signer: Signer;
-    };
-  }
-}
-
-export interface Method {
-  section: string;
-  method: string;
-  args: any[];
-}
 
 interface ExtrinsicBuilderProps {
-  onExtrinsicChange: (extrinsic: Extrinsic) => void;
+  client: DedotClient<PolkadotApi> | null;
+  metadata: Metadata["latest"] | null;
+  extrinsic: ClientMethod | null;
+  onExtrinsicChange: (extrinsic: ClientMethod) => void;
+}
+interface FormValues {
+  section: string;
+  method: string;
+  [key: string]: string;
 }
 
 const ExtrinsicBuilder: React.FC<ExtrinsicBuilderProps> = ({
+  client,
+  metadata,
+  extrinsic,
   onExtrinsicChange,
 }) => {
-  const { api } = useApi();
   const { account } = useKeyring();
-  const [selectedSection, setSelectedSection] = useState<string | null>(null);
-  const [sections, setSections] = useState<string[]>([]);
-  const [methods, setMethods] = useState<Method[]>([]);
-  const [selectedMethod, setSelectedMethod] = useState<Method | null>(null);
-  const [dropdownOpenSection, setDropdownOpenSection] = useState(false);
-  const [dropdownOpenMethod, setDropdownOpenMethod] = useState(false);
-  const [args, setArgs] = useState<{ name: string; value: string | null }[]>(
-    []
+  const [sections, setSections] = useState<
+    { text: string; value: string }[] | null
+  >([]);
+  const [methods, setMethods] = useState<ClientMethod[] | null>([]);
+  const [selectedMethod, setSelectedMethod] = useState<ClientMethod | null>(
+    null
   );
 
-  useEffect(() => {
-    if (api) {
-      const sectionOptions = createSectionOptions(api);
-      setSections(sectionOptions.map((sectionOption) => sectionOption.value));
-    }
-  }, [api]);
+  const form = useForm<FormValues>({
+    defaultValues: {
+      section: "",
+      method: "",
+    },
+  });
 
   useEffect(() => {
-    if (api && selectedSection) {
-      setMethods(createMethodOptions(api, selectedSection));
+    if (metadata) {
+      const sectionOptions = createSectionOptions(metadata);
+      setSections(sectionOptions);
     }
-  }, [api, selectedSection]);
+  }, [metadata]);
 
   useEffect(() => {
-    if (api && selectedMethod) {
-      const extrinsic = api.tx[selectedMethod.section][selectedMethod.method](
-        ...args.map((arg) => arg.value)
-      );
-      onExtrinsicChange(extrinsic);
+    const section = form.watch("section");
+    if (client && metadata && section) {
+      const newMethods = createMethodOptions(client, metadata, section);
+      setMethods(newMethods);
+      form.setValue("method", "");
+      setSelectedMethod(null);
     }
-  }, [api, selectedMethod, args]);
+  }, [client, metadata, form.watch("section")]);
 
-  const toggleSection = () => setDropdownOpenSection((prevState) => !prevState);
-  const toggleMethod = () => setDropdownOpenMethod((prevState) => !prevState);
+  useEffect(() => {
+    const method = form.watch("method");
+    const newSelectedMethod = methods?.find((m) => m.method === method) || null;
+    setSelectedMethod(newSelectedMethod);
 
-  const selectSection = (section: string) => {
-    setSelectedSection(section);
-    setSelectedMethod(null);
-  };
-
-  const selectMethod = (method: Method) => {
-    setSelectedMethod(method);
-    setArgs(
-      method.args.map((arg) => ({ name: arg.name.toString(), value: null }))
-    );
-  };
-
-  const updateArg = (index: number, value: string) => {
-    const newArgs = [...args];
-    newArgs[index].value = value;
-    setArgs(newArgs);
-  };
-
-  const signAndSubmitExtrinsic = async () => {
-    if (!selectedMethod || !account || !window.injected || !api) return;
-
-    const { section, method, args } = selectedMethod;
-
-    const extrinsic = api.tx[section][method](
-      ...args.map((arg, index) => {
-        const input = args[index];
-        return input.value || input.placeholder || "";
-      })
-    );
-
-    const signer = window.injected.signer as Signer;
-    api.setSigner(signer);
-
-    try {
-      const unsub = await extrinsic.signAndSend(account.address, (result) => {
-        toast.info("Extrinsic status: " + result.status.toString);
-        if (result.status.isFinalized) {
-          toast.success(
-            "Extrinsic finalized at block: " +
-              result.status.asFinalized.toString()
-          );
-          unsub();
+    // Clear previous arg fields and set up new ones
+    if (newSelectedMethod && newSelectedMethod.args) {
+      const newValues: FormValues = {
+        section: form.getValues("section"),
+        method: form.getValues("method"),
+      };
+      newSelectedMethod.args.forEach((arg) => {
+        if (arg && arg.name) {
+          newValues[arg.name] = "";
         }
       });
+      form.reset(newValues);
+    }
+  }, [form.watch("method"), methods]);
+
+  useEffect(() => {
+    if (extrinsic && client && metadata) {
+      const section =
+        sections?.find((s) => s.value === extrinsic.section)?.value || "";
+      const method = extrinsic.method;
+
+      form.setValue("section", section);
+      form.setValue("method", method);
+
+      const newSelectedMethod =
+        methods?.find((m) => m.section === section && m.method === method) ||
+        null;
+      setSelectedMethod(newSelectedMethod);
+
+      if (newSelectedMethod && newSelectedMethod.args) {
+        const newValues: FormValues = {
+          section: form.getValues("section"),
+          method: form.getValues("method"),
+        };
+        newSelectedMethod.args.forEach((arg) => {
+          if (arg && arg.name) {
+            newValues[arg.name] = "";
+          }
+        });
+        form.reset(newValues);
+      }
+    }
+  }, [extrinsic, client, metadata]);
+
+  const updateExtrinsic = () => {
+    if (!client || !metadata) return;
+
+    const section = form.watch("section");
+    const method = form.watch("method");
+
+    const args = selectedMethod?.args?.map((arg) => form.watch(arg.name)) || [];
+
+    try {
+      const extrinsic: ClientMethod = {
+        section: section,
+        method: method,
+        args:
+          selectedMethod?.args?.map((arg, index) => ({
+            name: arg.name,
+            type: arg.type,
+            value: args[index] || undefined,
+          })) || [],
+      };
+      onExtrinsicChange(extrinsic);
     } catch (error) {
-      toast.error("Error signing and sending extrinsic: " + error);
+      console.error("Error creating extrinsic:", error);
     }
   };
 
+  const onSubmit = async (data: any) => {
+    if (!client || !account || !selectedMethod) return;
+
+    const section = data.section;
+    const method = data.method;
+
+    const args = selectedMethod?.args?.map((arg) => data[arg.name]) || [];
+
+    try {
+      const extrinsic = client.tx[section][method](...args);
+      const signedExtrinsic = await extrinsic.sign(account.address);
+      const txHash = await signedExtrinsic.send();
+      console.log("Transaction sent with hash:", txHash);
+    } catch (error) {
+      console.error("Error signing and sending extrinsic:", error);
+    }
+  };
+
+  console.log("data", selectedMethod, methods);
+
   return (
-    <div>
-      <h3>Select Extrinsic</h3>
-      <h4>Choose a section:</h4>
-      {/* use select from shadcn instead of dropdown */}
-      <Select>
-        <SelectTrigger>
-          <SelectValue>{selectedSection || "Select Section"}</SelectValue>
-        </SelectTrigger>
-        <SelectContent>
-          {sections.map((section, index) => (
-            <SelectItem
-              key={index}
-              onClick={() => selectSection(section)}
-              value={section}
-            ></SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-
-      {selectedSection && (
-        <>
-          <h4>Select Section Method:</h4>
-          <Select>
-            <SelectTrigger>
-              <SelectValue>
-                {selectedMethod ? selectedMethod.method : "Select Method"}
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              {methods.length ? (
-                methods.map((method, index) => (
-                  <SelectItem
-                    key={index}
-                    onClick={() => selectMethod(method)}
-                    value={`${method.section}.${method.method}`}
+    <Card className="w-full">
+      <CardHeader>
+        <CardTitle>Extrinsic Builder</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Form {...form}>
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+            <FormField
+              control={form.control}
+              name="section"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Choose a section</FormLabel>
+                  <Select
+                    onValueChange={(value) => {
+                      field.onChange(value);
+                      updateExtrinsic();
+                    }}
+                    value={field.value}
                   >
-                    {method.section}.{method.method}
-                  </SelectItem>
-                ))
-              ) : (
-                <SelectItem disabled value="No methods" />
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select a section" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {sections?.map((section) => (
+                        <SelectItem key={section.value} value={section.value}>
+                          {section.text}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormDescription>
+                    A section is an extrinsic function section that allows users
+                    to choose an overall section to build the extrinsic code.
+                  </FormDescription>
+                </FormItem>
               )}
-            </SelectContent>
-          </Select>
-        </>
-      )}
+            />
 
-      {selectedMethod && (
-        <div>
-          <h3>Parameters</h3>
-          {args.map((arg, index) => (
-            <div
-              key={index}
-              className="grid w-full max-w-sm items-center gap-1.5"
-            >
-              <Label htmlFor={arg.name}>{arg.name}</Label>
-              <Input
-                type="text"
+            <FormField
+              control={form.control}
+              name="method"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Select extrinsic function</FormLabel>
+                  <Select
+                    onValueChange={(value) => {
+                      field.onChange(value);
+                      updateExtrinsic();
+                    }}
+                    value={field.value}
+                  >
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select a method" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {methods?.map((method) => (
+                        <SelectItem
+                          key={`${method.section}.${method.method}`}
+                          value={method.method}
+                        >
+                          {method.method}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </FormItem>
+              )}
+            />
+
+            {selectedMethod?.args?.map((arg) => (
+              <FormField
+                key={arg.name}
+                control={form.control}
                 name={arg.name}
-                id={arg.name}
-                placeholder={`Enter ${arg.name}`}
-                onChange={(e) => updateArg(index, e.target.value)}
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>{arg.name}</FormLabel>
+                    <FormControl>
+                      <Input
+                        {...field}
+                        placeholder={`Enter ${arg.name}`}
+                        onChange={(e) => {
+                          field.onChange(e);
+                          updateExtrinsic();
+                        }}
+                      />
+                    </FormControl>
+                    <FormDescription>{`${JSON.stringify(client?.registry.findType(arg.type))} Codec:${JSON.stringify(client?.registry.findCodec(arg.type))}`}</FormDescription>
+                  </FormItem>
+                )}
               />
-            </div>
-          ))}
-          {account && (
-            <Button size={"lg"} onClick={signAndSubmitExtrinsic}>
-              Sign and Submit
+            ))}
+
+            <Button type="submit" disabled={!account}>
+              {account ? "Sign and Submit" : "Connect Wallet to Sign"}
             </Button>
-          )}
-        </div>
-      )}
-    </div>
+          </form>
+        </Form>
+      </CardContent>
+    </Card>
   );
 };
 
 export default ExtrinsicBuilder;
+
+// useEffect(() => {
+//   if (client && selectedMethod) {
+//     const extrinsic = client.tx[selectedMethod.section][
+//       selectedMethod.method
+//     ](...args?.map((arg) => arg.value));
+//     onExtrinsicChange(extrinsic);
+//   }
+// }, [client, selectedMethod]);
+
+// const signAndSubmitExtrinsic = async () => {
+//   if (!selectedMethod || !account || !window.injected || !api) return;
+
+//   const { section, method, args } = selectedMethod;
+
+//   const extrinsic = client.tx[section][method](
+//     ...args.map((arg, index) => {
+//       const input = args[index];
+//       return input.value || input.placeholder || "";
+//     })
+//   );
+
+//   const signer = window.injected.signer as Signer;
+//   api.setSigner(signer);
+
+//   try {
+//     const unsub = await extrinsic.signAndSend(account.address, (result) => {
+//       toast.info("Extrinsic status: " + result.status.toString);
+//       if (result.status.isFinalized) {
+//         toast.success(
+//           "Extrinsic finalized at block: " +
+//             result.status.asFinalized.toString()
+//         );
+//         unsub();
+//       }
+//     });
+//   } catch (error) {
+//     toast.error("Error signing and sending extrinsic: " + error);
+//   }
+// };
