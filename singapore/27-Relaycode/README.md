@@ -2,7 +2,7 @@
 
 
 <div align="center">
-<img src="docs/relaycode.png"/>
+<img src="docs/demo.gif"/>
 </div>
 
 ## Project Name
@@ -33,10 +33,9 @@ Relaycode is an intuitive extrinsics builder designed to transform the way devel
 
 
 ## Project Demonstration
-[Demo Video](docs/demo.mp4)
-<video width="100%" controls>
-  <source src="docs/demo.mp4" type="video/mp4">
-</video>
+<div align="center">
+<img src="docs/demo.gif"/>
+</div>
 
 ## Technical Architecture
 - Frontend: Next.js 15 with App Router, React, TypeScript
